@@ -1,0 +1,67 @@
+"""Web search tool for the growth agent and (optionally) the model.
+
+Candidates ALWAYS go to the review queue — the bot never serves
+unverified web results directly to users.
+"""
+import logging
+
+import httpx
+
+from app.config import settings
+
+logger = logging.getLogger(__name__)
+
+TOOL_SCHEMAS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": (
+                "Search the web for Orange County, CA homeless services. "
+                "Results are leads for staff review, not user-facing answers."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "max_results": {"type": "integer", "default": 5},
+                },
+                "required": ["query"],
+            },
+        },
+    }
+]
+
+
+def web_search(query: str, max_results: int = 5) -> str:
+    if not settings.tavily_api_key:
+        return "Web search is not configured."
+    try:
+        resp = httpx.post(
+            "https://api.tavily.com/search",
+            json={
+                "api_key": settings.tavily_api_key,
+                "query": query,
+                "max_results": max_results,
+                "search_depth": "basic",
+                "include_answer": True,
+            },
+            timeout=20.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        parts = []
+        if data.get("answer"):
+            parts.append(data["answer"])
+        for r in data.get("results", [])[:max_results]:
+            parts.append(f"- {r.get('title', '')}: {r.get('content', '')[:300]} ({r.get('url', '')})")
+        return "\n".join(parts) or "No results."
+    except Exception as e:
+        logger.warning(f"tavily search failed: {e}")
+        return "Search unavailable right now."
+
+
+def execute_tool(name: str, args: dict) -> str:
+    if name == "web_search":
+        return web_search(args.get("query", ""), args.get("max_results", 5))
+    return f"Unknown tool: {name}"
